@@ -20,9 +20,11 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-# Change this prompt to change what your voice agent does.
-# See README.md for example prompts (customer support, language tutor, receptionist).
-SYSTEM_PROMPT = """You are a friendly and efficient customer support agent for a tech company. Help users with account issues, billing questions, and product troubleshooting. Be concise, empathetic, and solution-oriented. If you don't know something, say so honestly and offer to escalate. Your responses are concise and without complex formatting, emojis, or symbols."""
+try:
+    from prompt import SYSTEM_PROMPT
+except ImportError:
+    from src.prompt import SYSTEM_PROMPT
+
 
 
 class Assistant(Agent):
@@ -65,11 +67,11 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
         # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=deepgram.STT(model="nova-3"),
+        stt=deepgram.STT(model="nova-3", language="multi"),
+
         # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
         # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=google.LLM(
@@ -93,6 +95,42 @@ async def my_agent(ctx: JobContext):
         preemptive_generation=True,
     )
 
+    @session.on("user_input_transcribed")
+    def on_user_input(ev):
+        text = ev.transcript.strip()
+        has_malayalam_script = any('\u0d00' <= char <= '\u0d7f' for char in text)
+        manglish_keywords = {
+            'namaskaram', 'namaste', 'njan', 'njangal', 'krishi', 'krisi', 'vilakal', 
+            'enikku', 'enkk', 'aanu', 'aano', 'undo', 'thengu', 'tengu', 'rubbar', 
+            'parayamo', 'sahayikamo', 'nandi', 'enthannu', 'enthokkeyundu'
+        }
+        words = [w.strip(".,!?").lower() for w in text.split()]
+        has_manglish_words = any(w in manglish_keywords for w in words)
+
+        if has_malayalam_script or has_manglish_words:
+            logger.info(f"Detected Malayalam/Manglish speech: '{ev.transcript}'. Switching TTS to Malayalam (Nimisha).")
+            session.tts.update_options(voice="Nimisha", locale="ml-IN")
+        else:
+            logger.info(f"Detected English speech: '{ev.transcript}'. Switching TTS to English (en-IN-anisha).")
+            session.tts.update_options(voice="en-IN-anisha", locale="en-IN")
+
+    @session.on("conversation_item_added")
+    def on_conversation_item_added(ev):
+        item = getattr(ev, "item", None)
+        if item and getattr(item, "role", "") == "assistant":
+            content = str(getattr(item, "content", "") or getattr(item, "text_content", ""))
+            if any('\u0d00' <= char <= '\u0d7f' for char in content):
+                logger.info(f"LLM generated Malayalam response. Ensuring TTS voice is Nimisha (ml-IN).")
+                session.tts.update_options(voice="Nimisha", locale="ml-IN")
+            elif content:
+                logger.info(f"LLM generated English response. Setting TTS voice to en-IN-anisha (en-IN).")
+                session.tts.update_options(voice="en-IN-anisha", locale="en-IN")
+
+
+
+
+
+
     # To use a realtime model instead of a voice pipeline, use the following session setup instead.
     # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
     # 1. Install livekit-agents[openai]
@@ -111,6 +149,9 @@ async def my_agent(ctx: JobContext):
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
 
+    # Join the room and connect to the user first
+    await ctx.connect()
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
         agent=Assistant(),
@@ -127,8 +168,6 @@ async def my_agent(ctx: JobContext):
         ),
     )
 
-    # Join the room and connect to the user
-    await ctx.connect()
 
 
 if __name__ == "__main__":
