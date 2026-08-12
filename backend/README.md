@@ -10,6 +10,25 @@ User speaks → [Deepgram STT] → text → [Gemini LLM] → response → [Murf 
 
 LiveKit handles the real-time audio transport. The agent connects to LiveKit as a participant, listens for user speech, and responds with synthesized audio.
 
+## Domain Data Function Calls (Farm & Field)
+
+The agent implements real domain data lookup tools for agricultural advisory:
+
+### 1. Market Price Lookup (`get_market_price`)
+- **Lookup Type**: Commodity rates by crop and location/district.
+- **Data Source**: Agmarknet (Agricultural Produce Market Committee) daily mandi pricing dataset and bulletins covering major Indian & Kerala crops (Coconut, Rubber, Paddy, Black Pepper, Small Cardamom, Arecanut, Nendran Banana).
+- **Trigger**: Called automatically when a farmer asks about commodity prices, mandi rates, selling prices, or price trends.
+
+### 2. District Weather Forecast (`get_weather_forecast`)
+- **Lookup Type**: Live temperature, weather condition, and rain probability forecast by district.
+- **Data Source**: Live REST API from [Open-Meteo](https://open-meteo.com/) (real-time meteorological data for agricultural districts).
+- **Trigger**: Called automatically when a user asks about local district weather, rainfall predictions, or spraying weather suitability.
+
+### Data Recency & Failure Path Standards
+- **Data Timestamping**: All tool responses include an explicit `data_timestamp` (e.g. "Today's Mandi Bulletin, August 10, 2026"). The voice agent is instructed to state the date/time of the rate or forecast so farmers can make informed daily decisions.
+- **Failure Path Handling**: Network timeouts (3.0s guard) or API connection errors return a structured JSON response with an `out_loud_script`. The agent speaks the outage clearly to the user out loud rather than going silent or fabricating data.
+
+
 ## Setup
 
 ### 1. Install dependencies

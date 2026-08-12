@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
@@ -8,6 +8,7 @@ import {
   AgentControlBar,
   type AgentControlBarControls,
 } from '@/components/agents-ui/agent-control-bar';
+import { AgentStateIndicator, type AgentUIState } from '@/components/app/agent-state-indicator';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { cn } from '@/lib/shadcn/utils';
 import { TileLayout } from './tile-view';
@@ -156,7 +157,7 @@ export interface AgentSessionView_01Props {
 }
 
 export function AgentSessionView_01({
-  preConnectMessage = 'Agent is listening, ask it a question',
+  preConnectMessage = 'Ask about crops, weather, market prices, or soil health',
   supportsChatInput = true,
   supportsVideoInput = true,
   supportsScreenShare = true,
@@ -180,6 +181,23 @@ export function AgentSessionView_01({
   const [chatOpen, setChatOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
+
+  // Map LiveKit agent state to our UI state for the indicator
+  const uiState: AgentUIState = useMemo(() => {
+    switch (agentState) {
+      case 'speaking':
+        return 'speaking';
+      case 'thinking':
+        return 'thinking';
+      case 'connecting':
+      case 'initializing':
+        return 'connecting';
+      case 'listening':
+      case 'idle':
+      default:
+        return 'listening';
+    }
+  }, [agentState]);
 
   const controls: AgentControlBarControls = {
     leave: true,
@@ -241,6 +259,11 @@ export function AgentSessionView_01({
         {...BOTTOM_VIEW_MOTION_PROPS}
         className="absolute inset-x-3 bottom-0 z-50 md:inset-x-12"
       >
+        {/* Agent state indicator */}
+        <div className="flex justify-center pb-3">
+          <AgentStateIndicator state={uiState} />
+        </div>
+
         {/* Pre-connect message */}
         {isPreConnectBufferEnabled && (
           <AnimatePresence>
