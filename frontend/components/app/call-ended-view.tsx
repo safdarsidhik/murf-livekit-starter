@@ -5,11 +5,13 @@ import { cn } from '@/lib/shadcn/utils';
 
 interface CallEndedViewProps {
   onRestart: () => void;
+  onGoToDashboard?: () => void;
   className?: string;
 }
 
 export const CallEndedView = ({
   onRestart,
+  onGoToDashboard,
   ref,
   className,
   ...props
@@ -17,7 +19,7 @@ export const CallEndedView = ({
   return (
     <div
       ref={ref}
-      className={cn('bg-background flex flex-col items-center justify-center px-6 text-center', className)}
+      className={cn('bg-background flex flex-col items-center justify-center px-6 text-center py-12', className)}
       {...props}
     >
       {/* Completed icon */}
@@ -49,7 +51,7 @@ export const CallEndedView = ({
         </svg>
       </div>
 
-      <h2 className="text-foreground text-xl font-bold">Call Ended</h2>
+      <h2 className="text-foreground text-xl font-bold">Call Completed</h2>
 
       <p className="text-muted-foreground mt-2 max-w-xs text-sm leading-relaxed">
         Thanks for talking with Farm &amp; Field.
@@ -59,19 +61,38 @@ export const CallEndedView = ({
         നന്ദി! ഫാം ആന്റ് ഫീൽഡ് ഉപയോഗിച്ചതിന് നന്ദി
       </p>
 
-      {/* Restart button */}
-      <Button
-        id="start-again-btn"
-        size="lg"
-        onClick={onRestart}
-        className="mt-8 w-64 rounded-full font-sans text-sm font-semibold tracking-wide"
-      >
-        🌾 Start Again
-      </Button>
+      <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-400 border border-emerald-500/20">
+        <span>💾</span> Call outcome recorded in SQLite database
+      </div>
 
-      <p className="text-muted-foreground mt-3 text-xs opacity-60">
+      {/* Buttons */}
+      <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+        <Button
+          id="start-again-btn"
+          size="lg"
+          onClick={onRestart}
+          className="w-60 rounded-full font-sans text-sm font-semibold tracking-wide"
+        >
+          🌾 Start Again
+        </Button>
+
+        {onGoToDashboard && (
+          <Button
+            id="view-dashboard-btn"
+            size="lg"
+            variant="outline"
+            onClick={onGoToDashboard}
+            className="w-60 rounded-full font-sans text-sm font-semibold tracking-wide border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"
+          >
+            📊 View Dashboard Stats
+          </Button>
+        )}
+      </div>
+
+      <p className="text-muted-foreground mt-4 text-xs opacity-60">
         Your assistant is always here to help.
       </p>
     </div>
   );
 };
+

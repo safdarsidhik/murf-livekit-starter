@@ -71,20 +71,6 @@ export default async function RootLayout({ children }: RootLayoutProps) {
           enableSystem
           disableTransitionOnChange
         >
-          <header className="fixed top-0 left-0 z-50 hidden w-full flex-row items-center justify-between px-6 py-4 md:flex">
-            <div className="flex items-center gap-2.5">
-              <span className="text-xl" role="img" aria-label="seedling">
-                🌱
-              </span>
-              <span className="text-foreground font-sans text-sm font-bold tracking-wide">
-                Farm &amp; Field
-              </span>
-            </div>
-            <span className="text-muted-foreground font-mono text-xs tracking-wider">
-              AI Farming Assistant
-            </span>
-          </header>
-
           {children}
           <div className="group fixed bottom-0 left-1/2 z-50 mb-2 -translate-x-1/2">
             <ThemeToggle className="translate-y-20 transition-transform delay-150 duration-300 group-hover:translate-y-0" />

@@ -13,35 +13,127 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel
 
 try:
     from escalation import init_escalation_table, list_escalations, resolve_escalation
 except ImportError:
     from src.escalation import init_escalation_table, list_escalations, resolve_escalation
 
-app = FastAPI(title="Farm & Field — Escalation Dashboard")
+try:
+    from db import (
+        get_call_stats,
+        init_call_logs_table,
+        list_call_logs,
+        record_call_outcome,
+        update_call_outcome,
+    )
+except ImportError:
+    from src.db import (
+        get_call_stats,
+        init_call_logs_table,
+        list_call_logs,
+        record_call_outcome,
+        update_call_outcome,
+    )
 
-# Ensure the table exists when the app starts
+app = FastAPI(title="Farm & Field — Escalation & Call Dashboard")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Ensure database tables exist on startup
 init_escalation_table()
+init_call_logs_table()
+
+
+class CallOutcomePayload(BaseModel):
+    call_id: str
+    outcome: str
+    success_condition: str = "Query resolved"
+    user_id: str = "FF001"
+    caller_name: str = "Farmer"
+    started_at: str | None = None
+    ended_at: str | None = None
+    duration_seconds: int = 0
+    notes: str = ""
+
+
+class UpdateOutcomePayload(BaseModel):
+    outcome: str
+    success_condition: str | None = None
+    notes: str | None = None
+
 
 # --------------------------------------------------------------------------- #
 # API endpoints                                                                #
 # --------------------------------------------------------------------------- #
 
 @app.get("/api/escalations")
-def api_list(status: str = ""):
+def api_list_escalations(status: str = ""):
     """Return all escalations as JSON (optional ?status=open|resolved)."""
     return list_escalations(status=status or None)
 
 
 @app.post("/api/escalations/{ref_id}/resolve")
-def api_resolve(ref_id: str):
+def api_resolve_escalation(ref_id: str):
     """Mark a single escalation as resolved."""
     ok = resolve_escalation(ref_id)
     if ok:
         return {"status": "resolved", "ref_id": ref_id}
     return JSONResponse(status_code=404, content={"error": "ref_id not found"})
+
+
+@app.get("/api/calls/stats")
+def api_call_stats():
+    """Return summary stats showing Total calls, Successful calls, and Failed calls."""
+    return get_call_stats()
+
+
+@app.get("/api/calls")
+def api_list_calls(limit: int = 50, outcome: str = ""):
+    """Return recorded call logs."""
+    return list_call_logs(limit=limit, outcome=outcome or None)
+
+
+@app.post("/api/calls/record")
+@app.post("/api/calls")
+def api_record_call(payload: CallOutcomePayload):
+    """Record or update a call outcome (successful or failed)."""
+    rec = record_call_outcome(
+        call_id=payload.call_id,
+        outcome=payload.outcome,
+        success_condition=payload.success_condition,
+        user_id=payload.user_id,
+        caller_name=payload.caller_name,
+        started_at=payload.started_at,
+        ended_at=payload.ended_at,
+        duration_seconds=payload.duration_seconds,
+        notes=payload.notes,
+    )
+    return {"status": "success", "record": rec}
+
+
+@app.post("/api/calls/{call_id}/outcome")
+def api_update_call_outcome(call_id: str, payload: UpdateOutcomePayload):
+    """Update outcome of an existing call record."""
+    ok = update_call_outcome(
+        call_id=call_id,
+        outcome=payload.outcome,
+        success_condition=payload.success_condition,
+        notes=payload.notes,
+    )
+    if ok:
+        return {"status": "updated", "call_id": call_id, "outcome": payload.outcome}
+    return JSONResponse(status_code=404, content={"error": "call_id not found or invalid outcome"})
+
 
 
 # --------------------------------------------------------------------------- #
@@ -242,24 +334,25 @@ def _render_html() -> str:
 
 <div class="stats">
   <div class="stat-card total">
-    <div class="label">Total</div>
-    <div class="value" id="s-total">—</div>
-  </div>
-  <div class="stat-card open">
-    <div class="label">Open</div>
-    <div class="value" id="s-open">—</div>
-  </div>
-  <div class="stat-card high">
-    <div class="label">High Urgency</div>
-    <div class="value" id="s-high">—</div>
+    <div class="label">Total Calls</div>
+    <div class="value" id="s-call-total">—</div>
   </div>
   <div class="stat-card res">
-    <div class="label">Resolved</div>
-    <div class="value" id="s-res">—</div>
+    <div class="label">Successful Calls</div>
+    <div class="value" id="s-call-succ">—</div>
+  </div>
+  <div class="stat-card high">
+    <div class="label">Failed Calls</div>
+    <div class="value" id="s-call-fail">—</div>
+  </div>
+  <div class="stat-card open">
+    <div class="label">Open Escalations</div>
+    <div class="value" id="s-open">—</div>
   </div>
 </div>
 
 <div class="table-wrap">
+  <h2 style="font-size: 1rem; margin-bottom: 12px; color: var(--accent2);">🚨 Open Human Escalations</h2>
   <table>
     <thead>
       <tr>
@@ -297,21 +390,26 @@ def _render_html() -> str:
 
   async function load() {
     try {
-      const r = await fetch('/api/escalations');
-      allData = await r.json();
+      const [rEsc, rStats] = await Promise.all([
+        fetch('/api/escalations'),
+        fetch('/api/calls/stats')
+      ]);
+      allData = await rEsc.json();
+      const stats = await rStats.json();
       render(allData);
-      updateStats(allData);
+      updateStats(allData, stats);
     } catch(e) {
       console.error(e);
     }
   }
 
-  function updateStats(data) {
-    document.getElementById('s-total').textContent = data.length;
-    document.getElementById('s-open').textContent  = data.filter(d=>d.status==='open').length;
-    document.getElementById('s-high').textContent  = data.filter(d=>d.urgency==='high').length;
-    document.getElementById('s-res').textContent   = data.filter(d=>d.status==='resolved').length;
+  function updateStats(escalationsData, callStats) {
+    document.getElementById('s-call-total').textContent = callStats.total_calls || 0;
+    document.getElementById('s-call-succ').textContent  = callStats.successful_calls || 0;
+    document.getElementById('s-call-fail').textContent  = callStats.failed_calls || 0;
+    document.getElementById('s-open').textContent      = escalationsData.filter(d=>d.status==='open').length;
   }
+
 
   function render(data) {
     const filtered = currentFilter === 'all' ? data : data.filter(d=>d.status===currentFilter);

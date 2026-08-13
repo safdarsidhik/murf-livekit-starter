@@ -1,12 +1,16 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+
 import { TokenSource } from 'livekit-client';
 import { useSession } from '@livekit/components-react';
 import { WarningIcon } from '@phosphor-icons/react/dist/ssr';
 import type { AppConfig } from '@/app-config';
 import { AgentSessionProvider } from '@/components/agents-ui/agent-session-provider';
 import { StartAudioButton } from '@/components/agents-ui/start-audio-button';
+import { DashboardView } from '@/components/app/dashboard-view';
+import { HomeView } from '@/components/app/home-view';
+import { Navbar, type NavTab } from '@/components/app/navbar';
 import { ViewController } from '@/components/app/view-controller';
 import { Toaster } from '@/components/ui/sonner';
 import { useAgentErrors } from '@/hooks/useAgentErrors';
@@ -27,6 +31,8 @@ interface AppProps {
 }
 
 export function App({ appConfig }: AppProps) {
+  const [activeTab, setActiveTab] = useState<NavTab>('home');
+
   const tokenSource = useMemo(() => {
     return typeof process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT === 'string'
       ? getSandboxTokenSource(appConfig)
@@ -41,9 +47,29 @@ export function App({ appConfig }: AppProps) {
   return (
     <AgentSessionProvider session={session}>
       <AppSetup />
-      <main className="grid h-svh grid-cols-1 place-content-center">
-        <ViewController appConfig={appConfig} />
-      </main>
+      <div className="min-h-screen flex flex-col bg-background text-foreground">
+        {/* Navigation Bar */}
+        <Navbar activeTab={activeTab} onTabChange={setActiveTab} />
+
+        {/* Single Integrated Page Content Views */}
+        <main className="flex-1 w-full pb-16">
+          {activeTab === 'home' && (
+            <HomeView onStartAgent={() => setActiveTab('agent')} />
+          )}
+
+          {activeTab === 'agent' && (
+            <div className="flex min-h-[calc(100vh-4rem)] items-center justify-center">
+              <ViewController
+                appConfig={appConfig}
+                onGoToDashboard={() => setActiveTab('dashboard')}
+              />
+            </div>
+          )}
+
+          {activeTab === 'dashboard' && <DashboardView />}
+        </main>
+      </div>
+
       <StartAudioButton label="Start Audio" />
       <Toaster
         icons={{
@@ -62,3 +88,4 @@ export function App({ appConfig }: AppProps) {
     </AgentSessionProvider>
   );
 }
+

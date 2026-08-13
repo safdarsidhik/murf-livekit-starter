@@ -68,11 +68,14 @@ function mapAgentState(
   }
 }
 
+import { CallOutcomeModal } from '@/components/app/call-outcome-modal';
+
 interface ViewControllerProps {
   appConfig: AppConfig;
+  onGoToDashboard?: () => void;
 }
 
-export function ViewController({ appConfig }: ViewControllerProps) {
+export function ViewController({ appConfig, onGoToDashboard }: ViewControllerProps) {
   const { isConnected, start, end } = useSessionContext();
   const { resolvedTheme } = useTheme();
   const { state: agentState } = useAgent();
@@ -84,16 +87,30 @@ export function ViewController({ appConfig }: ViewControllerProps) {
     'denied'
   );
 
-  // Track connection → disconnection to show "Call Ended"
+  const [callId, setCallId] = useState<string>('');
+  const [callStartTime, setCallStartTime] = useState<number | null>(null);
+  const [lastDuration, setLastDuration] = useState<number>(0);
+  const [showOutcomeModal, setShowOutcomeModal] = useState(false);
+
+  // Track connection → disconnection to show "Call Ended" and trigger Call Outcome recording
   useEffect(() => {
     if (isConnected) {
+      if (!wasConnected) {
+        setCallStartTime(Date.now());
+        setCallId(`CALL_${Math.floor(1000 + Math.random() * 9000)}`);
+      }
       setWasConnected(true);
       setHasDisconnected(false);
       setHasMicError(false);
     } else if (wasConnected && !isConnected) {
       setHasDisconnected(true);
+      if (callStartTime) {
+        const durationSec = Math.max(1, Math.round((Date.now() - callStartTime) / 1000));
+        setLastDuration(durationSec);
+        setShowOutcomeModal(true);
+      }
     }
-  }, [isConnected, wasConnected]);
+  }, [isConnected, wasConnected, callStartTime]);
 
   const uiState = mapAgentState(isConnected, agentState, hasDisconnected, hasMicError);
 
@@ -101,6 +118,7 @@ export function ViewController({ appConfig }: ViewControllerProps) {
   const handleStartCall = useCallback(async () => {
     setHasMicError(false);
     setHasDisconnected(false);
+    setShowOutcomeModal(false);
 
     try {
       // Test microphone access before connecting
@@ -129,6 +147,7 @@ export function ViewController({ appConfig }: ViewControllerProps) {
     setHasDisconnected(false);
     setWasConnected(false);
     setHasMicError(false);
+    setShowOutcomeModal(false);
   }, []);
 
   // Retry after mic error
@@ -141,66 +160,81 @@ export function ViewController({ appConfig }: ViewControllerProps) {
   }, [handleStartCall]);
 
   return (
-    <AnimatePresence mode="wait">
-      {/* State 1: Ready */}
-      {uiState === 'ready' && (
-        <MotionWelcomeView
-          key="welcome"
-          {...VIEW_MOTION_PROPS}
-          startButtonText={appConfig.startButtonText}
-          onStartCall={handleStartCall}
-        />
-      )}
+    <>
+      <AnimatePresence mode="wait">
+        {/* State 1: Ready */}
+        {uiState === 'ready' && (
+          <MotionWelcomeView
+            key="welcome"
+            {...VIEW_MOTION_PROPS}
+            startButtonText={appConfig.startButtonText}
+            onStartCall={handleStartCall}
+          />
+        )}
 
-      {/* State 2: Connecting */}
-      {uiState === 'connecting' && (
-        <MotionConnectingView key="connecting" {...VIEW_MOTION_PROPS} />
-      )}
+        {/* State 2: Connecting */}
+        {uiState === 'connecting' && (
+          <MotionConnectingView key="connecting" {...VIEW_MOTION_PROPS} />
+        )}
 
-      {/* State 3 & 4: Listening / Speaking / Thinking — all use session view */}
-      {(uiState === 'listening' || uiState === 'speaking' || uiState === 'thinking') && (
-        <MotionSessionView
-          key="session-view"
-          {...VIEW_MOTION_PROPS}
-          supportsChatInput={appConfig.supportsChatInput}
-          supportsVideoInput={appConfig.supportsVideoInput}
-          supportsScreenShare={appConfig.supportsScreenShare}
-          isPreConnectBufferEnabled={appConfig.isPreConnectBufferEnabled}
-          audioVisualizerType={appConfig.audioVisualizerType}
-          audioVisualizerColor={
-            resolvedTheme === 'dark'
-              ? appConfig.audioVisualizerColorDark
-              : appConfig.audioVisualizerColor
-          }
-          audioVisualizerColorShift={appConfig.audioVisualizerColorShift}
-          audioVisualizerBarCount={appConfig.audioVisualizerBarCount}
-          audioVisualizerGridRowCount={appConfig.audioVisualizerGridRowCount}
-          audioVisualizerGridColumnCount={appConfig.audioVisualizerGridColumnCount}
-          audioVisualizerRadialBarCount={appConfig.audioVisualizerRadialBarCount}
-          audioVisualizerRadialRadius={appConfig.audioVisualizerRadialRadius}
-          audioVisualizerWaveLineWidth={appConfig.audioVisualizerWaveLineWidth}
-          className="fixed inset-0"
-        />
-      )}
+        {/* State 3 & 4: Listening / Speaking / Thinking — all use session view */}
+        {(uiState === 'listening' || uiState === 'speaking' || uiState === 'thinking') && (
+          <MotionSessionView
+            key="session-view"
+            {...VIEW_MOTION_PROPS}
+            supportsChatInput={appConfig.supportsChatInput}
+            supportsVideoInput={appConfig.supportsVideoInput}
+            supportsScreenShare={appConfig.supportsScreenShare}
+            isPreConnectBufferEnabled={appConfig.isPreConnectBufferEnabled}
+            audioVisualizerType={appConfig.audioVisualizerType}
+            audioVisualizerColor={
+              resolvedTheme === 'dark'
+                ? appConfig.audioVisualizerColorDark
+                : appConfig.audioVisualizerColor
+            }
+            audioVisualizerColorShift={appConfig.audioVisualizerColorShift}
+            audioVisualizerBarCount={appConfig.audioVisualizerBarCount}
+            audioVisualizerGridRowCount={appConfig.audioVisualizerGridRowCount}
+            audioVisualizerGridColumnCount={appConfig.audioVisualizerGridColumnCount}
+            audioVisualizerRadialBarCount={appConfig.audioVisualizerRadialBarCount}
+            audioVisualizerRadialRadius={appConfig.audioVisualizerRadialRadius}
+            audioVisualizerWaveLineWidth={appConfig.audioVisualizerWaveLineWidth}
+            className="fixed inset-0"
+          />
+        )}
 
-      {/* State 5: Call Ended */}
-      {uiState === 'call_ended' && (
-        <MotionCallEndedView
-          key="call-ended"
-          {...VIEW_MOTION_PROPS}
-          onRestart={handleRestart}
-        />
-      )}
+        {/* State 5: Call Ended */}
+        {uiState === 'call_ended' && (
+          <MotionCallEndedView
+            key="call-ended"
+            {...VIEW_MOTION_PROPS}
+            onRestart={handleRestart}
+            onGoToDashboard={onGoToDashboard}
+          />
+        )}
 
-      {/* Error: Microphone permission */}
-      {uiState === 'mic_error' && (
-        <MotionMicError
-          key="mic-error"
-          {...VIEW_MOTION_PROPS}
-          onRetry={handleMicRetry}
-          errorType={micErrorType}
-        />
-      )}
-    </AnimatePresence>
+        {/* Error: Microphone permission */}
+        {uiState === 'mic_error' && (
+          <MotionMicError
+            key="mic-error"
+            {...VIEW_MOTION_PROPS}
+            onRetry={handleMicRetry}
+            errorType={micErrorType}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Call Outcome Recording Modal */}
+      <CallOutcomeModal
+        isOpen={showOutcomeModal}
+        callId={callId || 'CALL_1001'}
+        durationSeconds={lastDuration}
+        onClose={() => setShowOutcomeModal(false)}
+        onSaveSuccess={() => {
+          setShowOutcomeModal(false);
+        }}
+      />
+    </>
   );
 }
+
