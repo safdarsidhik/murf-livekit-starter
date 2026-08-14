@@ -24,9 +24,9 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 try:
-    from prompt import SYSTEM_PROMPT
+    from prompt import CROP_SPECIALIST_PROMPT, SYSTEM_PROMPT
 except ImportError:
-    from src.prompt import SYSTEM_PROMPT
+    from src.prompt import CROP_SPECIALIST_PROMPT, SYSTEM_PROMPT
 
 try:
     from db import get_caller, init_db, save_caller_data, update_last_interaction
@@ -211,22 +211,6 @@ class Assistant(Agent):
         information for a human follow-up (Step 4 consent gate).
         NEVER call this tool if the farmer declined to share information.
 
-        Use ONLY for these two situations (Step 1):
-          1. reason='missing_market_data'  — get_market_price returned an error
-             or the crop is not in the Agmarknet dataset and the farmer urgently
-             needs today's price to make a selling decision.
-          2. reason='serious_crop_problem' — the farmer describes severe, spreading,
-             or unidentified crop disease / pest damage / mass yield loss that
-             exceeds the agent's advisory capability.
-
-        CONSENT GATE (Step 4):
-          Before calling this tool, tell the farmer:
-          "I would like to log a request for an agricultural expert to call you
-          back. I will share your name, the crop or problem you mentioned, and
-          the language you prefer. I will NOT share any account numbers or private
-          details. May I proceed?"
-          Only call this tool if they say yes.
-
         Args:
             reason          : 'missing_market_data' or 'serious_crop_problem'.
             what_happened   : 1-3 sentence summary of the farmer's problem.
@@ -269,6 +253,213 @@ class Assistant(Agent):
             return json.dumps(
                 {"status": "error", "message": str(exc)}, ensure_ascii=False
             )
+
+    @function_tool
+    async def transfer_to_crop_specialist(
+        self,
+        context: RunContext,
+        problem_description: str = "",
+        crop: str = "",
+    ) -> str:
+        """Transfer the caller to the specialized Crop Problem Specialist when the farmer asks for detailed crop disease diagnosis, pest control troubleshooting, plant health issues, or severe crop damage analysis.
+
+        Args:
+            problem_description: Description of the crop symptoms, disease, or damage reported by the farmer.
+            crop: Name of the crop affected (e.g. paddy, rubber, coconut, pepper, banana, cardamom).
+        """
+        logger.info(
+            f"Transfer tool invoked: transferring to CropProblemSpecialist (problem='{problem_description}', crop='{crop}')"
+        )
+
+        # Step 5 Requirement: Spoken notification out loud before handoff
+        context.session.say("I will connect you to our crop specialist.")
+
+        # Step 2 & Step 4: Switch active agent to CropProblemSpecialist while preserving conversation history
+        specialist = CropProblemSpecialist(default_user_id=self.default_user_id)
+        context.session.update_agent(specialist)
+
+        # Voice Requirement: Switch TTS voice to male voice (Dr. Rajesh persona)
+        context.session.tts.update_options(voice="en-IN-samar", locale="en-IN")
+
+        # Step 5 Requirement: Specialist introduces itself after taking over
+        intro_instructions = (
+            f"Introduce yourself clearly as Dr. Rajesh, the Crop Problem Specialist. "
+            f"State that you have taken over the conversation to diagnose and solve their crop problem "
+            f"({f'regarding {crop}: {problem_description}' if problem_description or crop else 'with their crop'}). "
+            f"Ask the farmer to describe the symptoms they are seeing on their crop."
+        )
+        await context.session.generate_reply(instructions=intro_instructions)
+
+        return json.dumps(
+            {
+                "status": "transferred_to_specialist",
+                "specialist_name": "Dr. Rajesh (Crop Problem Specialist)",
+                "voice": "Male (en-IN-samar)",
+                "passed_context": {"crop": crop, "problem": problem_description},
+            },
+            ensure_ascii=False,
+        )
+
+
+class CropProblemSpecialist(Agent):
+    """Specialist Agent for deep crop problem diagnosis, plant pathology, and pest troubleshooting.
+
+    Role: Dr. Rajesh (Crop Problem Specialist).
+    Voice: Male voice (en-IN-samar / ml-IN-madhavan).
+    Scope: Smaller & more focused than the main agent - strictly plant health, disease diagnosis, pest remedies.
+    """
+
+    def __init__(self, default_user_id: str = "FF001") -> None:
+        self.default_user_id = default_user_id
+        super().__init__(
+            instructions=CROP_SPECIALIST_PROMPT,
+        )
+
+    async def on_enter(self) -> None:
+        """Called when CropProblemSpecialist is set as the active session agent."""
+        logger.info("CropProblemSpecialist (Dr. Rajesh) entered session. Activating male voice (en-IN-samar).")
+        if self.session and self.session.tts:
+            self.session.tts.update_options(voice="en-IN-samar", locale="en-IN")
+
+    @function_tool
+    async def lookup_caller(
+        self,
+        context: RunContext,
+        user_id: str = "",
+        name: str = "",
+    ) -> str:
+        """Look up existing caller information and farming facts from the SQLite database."""
+        search_id = user_id or self.default_user_id
+        logger.info(f"[Specialist] Looking up caller in DB: user_id='{search_id}', name='{name}'")
+
+        caller = get_caller(user_id=search_id, name=name)
+        if not caller and search_id != self.default_user_id:
+            caller = get_caller(user_id=self.default_user_id)
+
+        if caller:
+            update_last_interaction(caller["user_id"])
+            return json.dumps(
+                {
+                    "status": "found",
+                    "user_id": caller["user_id"],
+                    "name": caller["name"],
+                    "language_preference": caller["language_preference"],
+                    "facts": caller["facts"],
+                    "last_interaction": caller["last_interaction"],
+                },
+                ensure_ascii=False,
+            )
+
+        return json.dumps(
+            {
+                "status": "not_found",
+                "message": "No stored caller record found for this caller.",
+            },
+            ensure_ascii=False,
+        )
+
+    @function_tool
+    async def save_caller(
+        self,
+        context: RunContext,
+        user_id: str = "",
+        name: str = "",
+        language_preference: str = "Malayalam",
+        crops_grown: str = "",
+        land_size: str = "",
+        district: str = "",
+        irrigation_type: str = "",
+    ) -> str:
+        """Save or update caller information and farming facts in the SQLite database after explicit consent."""
+        target_id = user_id or self.default_user_id or f"FF_{name.lower() if name else 'user'}"
+        target_name = name or "Farmer"
+
+        facts = {}
+        if crops_grown:
+            facts["crops_grown"] = crops_grown
+        if land_size:
+            facts["land_size"] = land_size
+        if district:
+            facts["district"] = district
+        if irrigation_type:
+            facts["irrigation_type"] = irrigation_type
+
+        logger.info(f"[Specialist] Saving caller facts for user_id='{target_id}', facts={facts}")
+        record = save_caller_data(
+            user_id=target_id,
+            name=target_name,
+            language_preference=language_preference,
+            facts=facts,
+        )
+        return json.dumps(
+            {
+                "status": "saved",
+                "message": f"Successfully saved information for {target_name}.",
+                "record": record,
+            },
+            ensure_ascii=False,
+        )
+
+    @function_tool
+    async def create_escalation(
+        self,
+        context: RunContext,
+        reason: str,
+        what_happened: str,
+        caller_name: str = "",
+        caller_lang: str = "Malayalam",
+        follow_up_pref: str = "voice_call",
+        already_checked: str = "",
+        crop: str = "",
+        district: str = "",
+        urgency: str = "medium",
+    ) -> str:
+        """Create a human-escalation request when even the specialist cannot solve a critical crop issue or outbreak."""
+        logger.info(f"[Specialist] Escalating crop problem: reason='{reason}', caller='{caller_name}', crop='{crop}'")
+        try:
+            result = create_escalation_request(
+                reason=reason,
+                what_happened=what_happened,
+                caller_name=caller_name or "Unknown Farmer",
+                caller_lang=caller_lang,
+                follow_up_pref=follow_up_pref,
+                already_checked=already_checked,
+                crop=crop,
+                district=district,
+                urgency=urgency,
+            )
+            return json.dumps(
+                {
+                    "status": "escalation_created",
+                    "ref_id": result["ref_id"],
+                    "next_steps_for_farmer": result["next_steps"],
+                },
+                ensure_ascii=False,
+            )
+        except ValueError as exc:
+            return json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False)
+
+    @function_tool
+    async def transfer_to_main_agent(
+        self,
+        context: RunContext,
+        reason: str = "User requested general market prices or weather forecasts.",
+    ) -> str:
+        """Transfer the caller back to the main Farm & Field assistant when the user asks for market rates, rain forecasts, or general non-disease inquiries."""
+        logger.info(f"CropProblemSpecialist handing call back to Main Agent. Reason: '{reason}'")
+        context.session.say("I am connecting you back to our main Farm and Field assistant.")
+
+        main_agent = Assistant(default_user_id=self.default_user_id)
+        context.session.update_agent(main_agent)
+        context.session.tts.update_options(voice="Nimisha", locale="ml-IN")
+
+        await context.session.generate_reply(
+            instructions="Acknowledge returning to the main Farm & Field assistant and ask how you can help with market rates or weather."
+        )
+        return json.dumps(
+            {"status": "transferred_to_main", "reason": reason},
+            ensure_ascii=False,
+        )
 
 
 
@@ -336,34 +527,62 @@ async def my_agent(ctx: JobContext):
         words = [w.strip(".,!?").lower() for w in text.split()]
         has_manglish_words = any(w in manglish_keywords for w in words)
 
-        if has_malayalam_script or has_manglish_words:
-            logger.info(
-                f"Detected Malayalam/Manglish speech: '{ev.transcript}'. Switching TTS to Malayalam (Nimisha)."
-            )
-            session.tts.update_options(voice="Nimisha", locale="ml-IN")
+        current_agent = getattr(session, "current_agent", None)
+        is_specialist = isinstance(current_agent, CropProblemSpecialist) or (
+            current_agent and current_agent.__class__.__name__ == "CropProblemSpecialist"
+        )
+
+        if is_specialist:
+            if has_malayalam_script or has_manglish_words:
+                logger.info("CropProblemSpecialist active. Using male Malayalam voice (ml-IN-madhavan).")
+                session.tts.update_options(voice="ml-IN-madhavan", locale="ml-IN")
+            else:
+                logger.info("CropProblemSpecialist active. Using male English voice (en-IN-samar).")
+                session.tts.update_options(voice="en-IN-samar", locale="en-IN")
         else:
-            logger.info(
-                f"Detected English speech: '{ev.transcript}'. Switching TTS to English (en-IN-anisha)."
-            )
-            session.tts.update_options(voice="en-IN-anisha", locale="en-IN")
+            if has_malayalam_script or has_manglish_words:
+                logger.info(
+                    f"Detected Malayalam/Manglish speech: '{ev.transcript}'. Switching TTS to Malayalam (Nimisha)."
+                )
+                session.tts.update_options(voice="Nimisha", locale="ml-IN")
+            else:
+                logger.info(
+                    f"Detected English speech: '{ev.transcript}'. Switching TTS to English (en-IN-anisha)."
+                )
+                session.tts.update_options(voice="en-IN-anisha", locale="en-IN")
 
     @session.on("conversation_item_added")
     def on_conversation_item_added(ev):
         item = getattr(ev, "item", None)
         if item and getattr(item, "role", "") == "assistant":
+            current_agent = getattr(session, "current_agent", None)
+            is_specialist = isinstance(current_agent, CropProblemSpecialist) or (
+                current_agent and current_agent.__class__.__name__ == "CropProblemSpecialist"
+            )
             content = str(
                 getattr(item, "content", "") or getattr(item, "text_content", "")
             )
-            if any("\u0d00" <= char <= "\u0d7f" for char in content):
-                logger.info(
-                    "LLM generated Malayalam response. Ensuring TTS voice is Nimisha (ml-IN)."
-                )
-                session.tts.update_options(voice="Nimisha", locale="ml-IN")
-            elif content:
-                logger.info(
-                    "LLM generated English response. Setting TTS voice to en-IN-anisha (en-IN)."
-                )
-                session.tts.update_options(voice="en-IN-anisha", locale="en-IN")
+
+            if is_specialist:
+                if any("\u0d00" <= char <= "\u0d7f" for char in content):
+                    logger.info("CropProblemSpecialist generated Malayalam response. Setting male voice (ml-IN-madhavan).")
+                    session.tts.update_options(voice="ml-IN-madhavan", locale="ml-IN")
+                else:
+                    logger.info("CropProblemSpecialist generated English response. Setting male voice (en-IN-samar).")
+                    session.tts.update_options(voice="en-IN-samar", locale="en-IN")
+            else:
+                if any("\u0d00" <= char <= "\u0d7f" for char in content):
+                    logger.info(
+                        "LLM generated Malayalam response. Ensuring TTS voice is Nimisha (ml-IN)."
+                    )
+                    session.tts.update_options(voice="Nimisha", locale="ml-IN")
+                elif content:
+                    logger.info(
+                        "LLM generated English response. Setting TTS voice to en-IN-anisha (en-IN)."
+                    )
+                    session.tts.update_options(voice="en-IN-anisha", locale="en-IN")
+
+
 
     await ctx.connect()
 
